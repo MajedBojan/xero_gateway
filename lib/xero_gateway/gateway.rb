@@ -15,7 +15,14 @@ module XeroGateway
     def initialize(consumer_key, consumer_secret, options = {})
       @xero_url = options[:xero_url] || "https://api.xero.com/api.xro/2.0"
       @payroll_url = options[:payroll_url] || "https://api.xero.com/payroll.xro/1.0"
-      @client   = OAuth.new(consumer_key, consumer_secret, options)
+
+      if token = options[:oauth2_access_token]
+        tenant_id = options[:oauth2_tenant_id]
+        raise ArgumentError, "Must provide Tenant ID with OAuth2 access token" unless tenant_id
+        @client = ::XeroGateway::OAuth2::AccessTokenAdapter.new(token, tenant_id)
+      else
+        @client = OAuth.new(consumer_key, consumer_secret, options)
+      end
     end
 
     #
