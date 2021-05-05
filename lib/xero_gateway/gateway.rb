@@ -1,5 +1,4 @@
 module XeroGateway
-
   class Gateway
     include Http
     include Dates
@@ -7,15 +6,24 @@ module XeroGateway
     attr_accessor :client, :xero_url, :payroll_url, :logger
 
     extend Forwardable
-    def_delegators :client, :request_token, :access_token, :authorize_from_request, :authorize_from_access, :expires_at, :authorization_expires_at
+    def_delegators :client, :request_token, :access_token, :authorize_from_request, :authorize_from_access,
+                   :expires_at, :authorization_expires_at
 
     #
     # The consumer key and secret here correspond to those provided
     # to you by Xero inside the API Previewer.
     def initialize(consumer_key, consumer_secret, options = {})
-      @xero_url = options[:xero_url] || "https://api.xero.com/api.xro/2.0"
-      @payroll_url = options[:payroll_url] || "https://api.xero.com/payroll.xro/1.0"
-      @client   = OAuth.new(consumer_key, consumer_secret, options)
+      @xero_url = options[:xero_url] || 'https://api.xero.com/api.xro/2.0'
+      @payroll_url = options[:payroll_url] || 'https://api.xero.com/payroll.xro/1.0'
+      if token = options[:oauth2_access_token]
+        tenant_id = options[:oauth2_tenant_id]
+        raise ArgumentError, 'Must provide Tenant ID with OAuth2 access token' unless tenant_id
+
+        @client = ::XeroGateway::OAuth2::AccessTokenAdapter.new(token, tenant_id)
+      else
+        @client = OAuth.new(consumer_key, consumer_secret, options)
+      end
+      # debugger
     end
 
     #
@@ -28,7 +36,7 @@ module XeroGateway
     def get_contacts(options = {})
       request_params = {}
 
-      if !options[:updated_after].nil?
+      unless options[:updated_after].nil?
         warn '[warning] :updated_after is depracated in XeroGateway#get_contacts.  Use :modified_since'
         options[:modified_since] = options.delete(:updated_after)
       end
@@ -42,7 +50,7 @@ module XeroGateway
 
       response_xml = http_get(@client, "#{@xero_url}/Contacts", request_params)
 
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/contacts'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/contacts' })
     end
 
     # Retrieve a contact from Xero
@@ -60,8 +68,8 @@ module XeroGateway
     # Factory method for building new Contact objects associated with this gateway.
     def build_contact(contact = {})
       case contact
-        when Contact then   contact.gateway = self
-        when Hash then      contact = Contact.new(contact.merge({:gateway => self}))
+      when Contact then   contact.gateway = self
+      when Hash then      contact = Contact.new(contact.merge({ gateway: self }))
       end
       contact
     end
@@ -98,7 +106,10 @@ module XeroGateway
     #
     # xero_gateway.update_contact(contact)
     def update_contact(contact)
-      raise "contact_id or contact_number is required for updating contacts" if contact.contact_id.nil? and contact.contact_number.nil?
+      if contact.contact_id.nil? && contact.contact_number.nil?
+        raise 'contact_id or contact_number is required for updating contacts'
+      end
+
       save_contact(contact)
     end
 
@@ -113,16 +124,16 @@ module XeroGateway
     #
     def update_contacts(contacts)
       b = Builder::XmlMarkup.new
-      request_xml = b.Contacts {
-        contacts.each do | contact |
+      request_xml = b.Contacts do
+        contacts.each do |contact|
           contact.to_xml(b)
         end
-      }
+      end
 
       response_xml = http_post(@client, "#{@xero_url}/Contacts", request_xml, {})
 
-      response = parse_response(response_xml, {:request_xml => request_xml}, {:request_signature => 'POST/contacts'})
-      response.contacts.each_with_index do | response_contact, index |
+      response = parse_response(response_xml, { request_xml: request_xml }, { request_signature: 'POST/contacts' })
+      response.contacts.each_with_index do |response_contact, index|
         contacts[index].contact_id = response_contact.contact_id if response_contact && response_contact.contact_id
       end
       response
@@ -142,15 +153,15 @@ module XeroGateway
 
       response_xml = http_get(@client, "#{@xero_url}/ContactGroups", request_params)
 
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/contactgroups'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/contactgroups' })
     end
 
     # Retreives a contact group by its id.
     def get_contact_group_by_id(contact_group_id)
-      request_params = { :ContactGroupID => contact_group_id }
+      request_params = { ContactGroupID: contact_group_id }
       response_xml = http_get(@client, "#{@xero_url}/ContactGroups/#{CGI.escape(contact_group_id)}", request_params)
 
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/contactgroup'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/contactgroup' })
     end
 
     # Retrieves all invoices from Xero
@@ -162,23 +173,22 @@ module XeroGateway
     #
     # Note  : modified_since is in UTC format (i.e. Brisbane is UTC+10)
     def get_invoices(options = {})
-
       request_params = {}
 
       request_params[:InvoiceID]      = options[:invoice_id] if options[:invoice_id]
       request_params[:InvoiceNumber]  = options[:invoice_number] if options[:invoice_number]
       request_params[:order]          = options[:order] if options[:order]
       request_params[:ModifiedAfter]  = options[:modified_since] if options[:modified_since]
-      request_params[:IDs]            = Array(options[:invoice_ids]).join(",") if options[:invoice_ids]
-      request_params[:InvoiceNumbers] = Array(options[:invoice_numbers]).join(",") if options[:invoice_numbers]
-      request_params[:ContactIDs]     = Array(options[:contact_ids]).join(",") if options[:contact_ids]
+      request_params[:IDs]            = Array(options[:invoice_ids]).join(',') if options[:invoice_ids]
+      request_params[:InvoiceNumbers] = Array(options[:invoice_numbers]).join(',') if options[:invoice_numbers]
+      request_params[:ContactIDs]     = Array(options[:contact_ids]).join(',') if options[:contact_ids]
       request_params[:page]           = options[:page]  if options[:page]
 
       request_params[:where]          = options[:where] if options[:where]
 
       response_xml = http_get(@client, "#{@xero_url}/Invoices", request_params)
 
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/Invoices'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/Invoices' })
     end
 
     # Retrieves a single invoice
@@ -191,9 +201,9 @@ module XeroGateway
       request_params = {}
       headers        = {}
 
-      headers.merge!("Accept" => "application/pdf") if format == :pdf
+      headers.merge!('Accept' => 'application/pdf') if format == :pdf
 
-      url  = "#{@xero_url}/Invoices/#{CGI.escape(invoice_id_or_number)}"
+      url = "#{@xero_url}/Invoices/#{CGI.escape(invoice_id_or_number)}"
 
       response = http_get(@client, url, request_params, headers)
 
@@ -203,15 +213,15 @@ module XeroGateway
           f
         end
       else
-        parse_response(response, {:request_params => request_params}, {:request_signature => 'GET/Invoice'})
+        parse_response(response, { request_params: request_params }, { request_signature: 'GET/Invoice' })
       end
     end
 
     # Factory method for building new Invoice objects associated with this gateway.
     def build_invoice(invoice = {})
       case invoice
-        when Invoice then     invoice.gateway = self
-        when Hash then        invoice = Invoice.new(invoice.merge(:gateway => self))
+      when Invoice then     invoice.gateway = self
+      when Hash then        invoice = Invoice.new(invoice.merge(gateway: self))
       end
       invoice
     end
@@ -256,7 +266,8 @@ module XeroGateway
     # xero_gateway.update_invoice(invoice)
 
     def update_invoice(invoice)
-      raise "invoice_id is required for updating invoices" if invoice.invoice_id.nil?
+      raise 'invoice_id is required for updating invoices' if invoice.invoice_id.nil?
+
       save_invoice(invoice)
     end
 
@@ -269,16 +280,16 @@ module XeroGateway
     #
     def create_invoices(invoices)
       b = Builder::XmlMarkup.new
-      request_xml = b.Invoices {
-        invoices.each do | invoice |
+      request_xml = b.Invoices do
+        invoices.each do |invoice|
           invoice.to_xml(b)
         end
-      }
+      end
 
       response_xml = http_put(@client, "#{@xero_url}/Invoices?SummarizeErrors=false", request_xml, {})
 
-      response = parse_response(response_xml, {:request_xml => request_xml}, {:request_signature => 'PUT/invoices'})
-      response.invoices.each_with_index do | response_invoice, index |
+      response = parse_response(response_xml, { request_xml: request_xml }, { request_signature: 'PUT/invoices' })
+      response.invoices.each_with_index do |response_invoice, index|
         invoices[index].invoice_id = response_invoice.invoice_id if response_invoice && response_invoice.invoice_id
       end
       response
@@ -291,7 +302,6 @@ module XeroGateway
     #
     # Note  : modified_since is in UTC format (i.e. Brisbane is UTC+10)
     def get_credit_notes(options = {})
-
       request_params = {}
 
       request_params[:CreditNoteID]     = options[:credit_note_id] if options[:credit_note_id]
@@ -303,7 +313,7 @@ module XeroGateway
 
       response_xml = http_get(@client, "#{@xero_url}/CreditNotes", request_params)
 
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/CreditNotes'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/CreditNotes' })
     end
 
     # Retrieves a single credit_note
@@ -313,18 +323,18 @@ module XeroGateway
     def get_credit_note(credit_note_id_or_number)
       request_params = {}
 
-      url  = "#{@xero_url}/CreditNotes/#{CGI.escape(credit_note_id_or_number)}"
+      url = "#{@xero_url}/CreditNotes/#{CGI.escape(credit_note_id_or_number)}"
 
       response_xml = http_get(@client, url, request_params)
 
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/CreditNote'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/CreditNote' })
     end
 
     # Factory method for building new CreditNote objects associated with this gateway.
     def build_credit_note(credit_note = {})
       case credit_note
-        when CreditNote then     credit_note.gateway = self
-        when Hash then        credit_note = CreditNote.new(credit_note.merge(:gateway => self))
+      when CreditNote then credit_note.gateway = self
+      when Hash then credit_note = CreditNote.new(credit_note.merge(gateway: self))
       end
       credit_note
     end
@@ -357,7 +367,7 @@ module XeroGateway
     def create_credit_note(credit_note)
       request_xml = credit_note.to_xml
       response_xml = http_put(@client, "#{@xero_url}/CreditNotes", request_xml)
-      response = parse_response(response_xml, {:request_xml => request_xml}, {:request_signature => 'PUT/credit_note'})
+      response = parse_response(response_xml, { request_xml: request_xml }, { request_signature: 'PUT/credit_note' })
 
       # Xero returns credit_notes inside an <CreditNotes> tag, even though there's only ever
       # one for this request
@@ -379,17 +389,19 @@ module XeroGateway
     #
     def create_credit_notes(credit_notes)
       b = Builder::XmlMarkup.new
-      request_xml = b.CreditNotes {
-        credit_notes.each do | credit_note |
+      request_xml = b.CreditNotes do
+        credit_notes.each do |credit_note|
           credit_note.to_xml(b)
         end
-      }
+      end
 
       response_xml = http_put(@client, "#{@xero_url}/CreditNotes", request_xml, {})
 
-      response = parse_response(response_xml, {:request_xml => request_xml}, {:request_signature => 'PUT/credit_notes'})
-      response.credit_notes.each_with_index do | response_credit_note, index |
-        credit_notes[index].credit_note_id = response_credit_note.credit_note_id if response_credit_note && response_credit_note.credit_note_id
+      response = parse_response(response_xml, { request_xml: request_xml }, { request_signature: 'PUT/credit_notes' })
+      response.credit_notes.each_with_index do |response_credit_note, index|
+        if response_credit_note && response_credit_note.credit_note_id
+          credit_notes[index].credit_note_id = response_credit_note.credit_note_id
+        end
       end
       response
     end
@@ -432,7 +444,10 @@ module XeroGateway
     #
     # xero_gateway.update_bank_transaction(bank_transaction)
     def update_bank_transaction(bank_transaction)
-      raise "bank_transaction_id is required for updating bank transactions" if bank_transaction.bank_transaction_id.nil?
+      if bank_transaction.bank_transaction_id.nil?
+        raise 'bank_transaction_id is required for updating bank transactions'
+      end
+
       save_bank_transaction(bank_transaction)
     end
 
@@ -452,7 +467,7 @@ module XeroGateway
 
       response_xml = http_get(@client, "#{@xero_url}/BankTransactions", request_params)
 
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/BankTransactions'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/BankTransactions' })
     end
 
     # Retrieves a single bank transaction
@@ -463,7 +478,7 @@ module XeroGateway
       request_params = {}
       url = "#{@xero_url}/BankTransactions/#{CGI.escape(bank_transaction_id)}"
       response_xml = http_get(@client, url, request_params)
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/BankTransaction'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/BankTransaction' })
     end
 
     # Creates a manual journal in Xero based on a manual journal object.
@@ -485,7 +500,8 @@ module XeroGateway
     #
     # xero_gateway.update_manual_journal(manual_journal)
     def update_manual_journal(manual_journal)
-      raise "manual_journal_id is required for updating manual journals" if manual_journal.manual_journal_id.nil?
+      raise 'manual_journal_id is required for updating manual journals' if manual_journal.manual_journal_id.nil?
+
       save_manual_journal(manual_journal)
     end
 
@@ -497,12 +513,12 @@ module XeroGateway
     # Note  : modified_since is in UTC format (i.e. Brisbane is UTC+10)
     def get_manual_journals(options = {})
       request_params = {}
-      request_params[:ManualJournalID]  = options[:manual_journal_id] if options[:manual_journal_id]
-      request_params[:ModifiedAfter]      = options[:modified_since] if options[:modified_since]
+      request_params[:ManualJournalID] = options[:manual_journal_id] if options[:manual_journal_id]
+      request_params[:ModifiedAfter] = options[:modified_since] if options[:modified_since]
 
       response_xml = http_get(@client, "#{@xero_url}/ManualJournals", request_params)
 
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/ManualJournals'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/ManualJournals' })
     end
 
     # Retrieves a single manual journal
@@ -513,7 +529,7 @@ module XeroGateway
       request_params = {}
       url = "#{@xero_url}/ManualJournals/#{CGI.escape(manual_journal_id)}"
       response_xml = http_get(@client, url, request_params)
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/ManualJournal'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/ManualJournal' })
     end
 
     #
@@ -521,7 +537,7 @@ module XeroGateway
     #
     def get_accounts
       response_xml = http_get(@client, "#{xero_url}/Accounts")
-      parse_response(response_xml, {}, {:request_signature => 'GET/accounts'})
+      parse_response(response_xml, {}, { request_signature: 'GET/accounts' })
     end
 
     #
@@ -538,7 +554,7 @@ module XeroGateway
     def get_tracking_categories
       response_xml = http_get(@client, "#{xero_url}/TrackingCategories")
 
-      parse_response(response_xml, {}, {:request_signature => 'GET/TrackingCategories'})
+      parse_response(response_xml, {}, { request_signature: 'GET/TrackingCategories' })
     end
 
     #
@@ -546,7 +562,7 @@ module XeroGateway
     #
     def get_organisation
       response_xml = http_get(@client, "#{xero_url}/Organisation")
-      parse_response(response_xml, {}, {:request_signature => 'GET/organisation'})
+      parse_response(response_xml, {}, { request_signature: 'GET/organisation' })
     end
 
     #
@@ -554,7 +570,7 @@ module XeroGateway
     #
     def get_currencies
       response_xml = http_get(@client, "#{xero_url}/Currencies")
-      parse_response(response_xml, {}, {:request_signature => 'GET/currencies'})
+      parse_response(response_xml, {}, { request_signature: 'GET/currencies' })
     end
 
     #
@@ -562,7 +578,7 @@ module XeroGateway
     #
     def get_tax_rates
       response_xml = http_get(@client, "#{xero_url}/TaxRates")
-      parse_response(response_xml, {}, {:request_signature => 'GET/tax_rates'})
+      parse_response(response_xml, {}, { request_signature: 'GET/tax_rates' })
     end
 
     #
@@ -570,7 +586,7 @@ module XeroGateway
     #
     def get_items
       response_xml = http_get(@client, "#{xero_url}/Items")
-      parse_response(response_xml, {}, {:request_signature => 'GET/items'})
+      parse_response(response_xml, {}, { request_signature: 'GET/items' })
     end
 
     #
@@ -584,7 +600,7 @@ module XeroGateway
       end
 
       response_xml = http_put(@client, "#{xero_url}/Payments", request_xml)
-      parse_response(response_xml, {:request_xml => request_xml}, {:request_signature => 'PUT/payments'})
+      parse_response(response_xml, { request_xml: request_xml }, { request_signature: 'PUT/payments' })
     end
 
     #
@@ -598,58 +614,57 @@ module XeroGateway
       request_params[:where]         = options[:where] if options[:where]
 
       response_xml = http_get(@client, "#{@xero_url}/Payments", request_params)
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/payments'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/payments' })
     end
-
 
     #
     # Gets a single Payment for a specific organsation in Xero
     #
-    def get_payment(payment_id, options = {})
+    def get_payment(payment_id, _options = {})
       request_params = {}
       response_xml = http_get(client, "#{@xero_url}/Payments/#{payment_id}", request_params)
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/payments'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/payments' })
     end
 
     #
     # Get the Payroll calendars for a specific organization in Xero
     #
-    def get_payroll_calendars(options = {})
+    def get_payroll_calendars(_options = {})
       request_params = {}
       response_xml = http_get(client, "#{@payroll_url}/PayrollCalendars", request_params)
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/payroll_calendars'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/payroll_calendars' })
     end
 
     #
     # Get the Pay Runs for a specific organization in Xero
     #
-    def get_pay_runs(options = {})
+    def get_pay_runs(_options = {})
       request_params = {}
       response_xml = http_get(client, "#{@payroll_url}/PayRuns", request_params)
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/pay_runs'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/pay_runs' })
     end
 
     # Retrieves reports from Xero
     #
     # Usage : get_report("BankStatement", bank_account_id: "AC993F75-035B-433C-82E0-7B7A2D40802C")
     #         get_report("297c2dc5-cc47-4afd-8ec8-74990b8761e9", bank_account_id: "AC993F75-035B-433C-82E0-7B7A2D40802C")
-    def get_report(id_or_name, options={})
-      request_params = options.inject({}) do  |params, (key, val)|
-        xero_key = key.to_s.camelize.gsub(/id/i, "ID").to_sym
+    def get_report(id_or_name, options = {})
+      request_params = options.each_with_object({}) do |(key, val), params|
+        xero_key = key.to_s.camelize.gsub(/id/i, 'ID').to_sym
         params[xero_key] = val
-        params
       end
       response_xml = http_get(@client, "#{@xero_url}/reports/#{id_or_name}", request_params)
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/reports'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/reports' })
     end
 
     private
 
     def get_contact(contact_id = nil, contact_number = nil)
-      request_params = contact_id ? { :contactID => contact_id } : { :contactNumber => contact_number }
-      response_xml = http_get(@client, "#{@xero_url}/Contacts/#{CGI.escape(contact_id||contact_number)}", request_params)
+      request_params = contact_id ? { contactID: contact_id } : { contactNumber: contact_number }
+      response_xml = http_get(@client, "#{@xero_url}/Contacts/#{CGI.escape(contact_id || contact_number)}",
+                              request_params)
 
-      parse_response(response_xml, {:request_params => request_params}, {:request_signature => 'GET/contact'})
+      parse_response(response_xml, { request_params: request_params }, { request_signature: 'GET/contact' })
     end
 
     # Create or update a contact record based on if it has a contact_id or contact_number.
@@ -668,7 +683,8 @@ module XeroGateway
         create_or_save = :save
       end
 
-      response = parse_response(response_xml, {:request_xml => request_xml}, {:request_signature => "#{create_or_save == :create ? 'PUT' : 'POST'}/contact"})
+      response = parse_response(response_xml, { request_xml: request_xml },
+                                { request_signature: "#{create_or_save == :create ? 'PUT' : 'POST'}/contact" })
       contact.contact_id = response.contact.contact_id if response.contact && response.contact.contact_id
       response
     end
@@ -689,7 +705,8 @@ module XeroGateway
         create_or_save = :save
       end
 
-      response = parse_response(response_xml, {:request_xml => request_xml}, {:request_signature => "#{create_or_save == :create ? 'PUT' : 'POST'}/invoice"})
+      response = parse_response(response_xml, { request_xml: request_xml },
+                                { request_signature: "#{create_or_save == :create ? 'PUT' : 'POST'}/invoice" })
 
       # Xero returns invoices inside an <Invoices> tag, even though there's only ever
       # one for this request
@@ -718,7 +735,8 @@ module XeroGateway
         create_or_save = :save
       end
 
-      response = parse_response(response_xml, {:request_xml => request_xml}, {:request_signature => "#{create_or_save == :create ? 'PUT' : 'POST'}/BankTransactions"})
+      response = parse_response(response_xml, { request_xml: request_xml },
+                                { request_signature: "#{create_or_save == :create ? 'PUT' : 'POST'}/BankTransactions" })
 
       # Xero returns bank transactions inside an <BankTransactions> tag, even though there's only ever
       # one for this request
@@ -747,72 +765,94 @@ module XeroGateway
         create_or_save = :save
       end
 
-      response = parse_response(response_xml, {:request_xml => request_xml}, {:request_signature => "#{create_or_save == :create ? 'PUT' : 'POST'}/ManualJournals"})
+      response = parse_response(response_xml, { request_xml: request_xml },
+                                { request_signature: "#{create_or_save == :create ? 'PUT' : 'POST'}/ManualJournals" })
 
       # Xero returns manual journals inside an <ManualJournals> tag, even though there's only ever
       # one for this request
       response.response_item = response.manual_journals.first
 
-      manual_journal.manual_journal_id = response.manual_journal.manual_journal_id if response.success? && response.manual_journal && response.manual_journal.manual_journal_id
+      if response.success? && response.manual_journal && response.manual_journal.manual_journal_id
+        manual_journal.manual_journal_id = response.manual_journal.manual_journal_id
+      end
 
       response
     end
 
     def parse_response(raw_response, request = {}, options = {})
-
       response = XeroGateway::Response.new
 
-      doc = REXML::Document.new(raw_response, :ignore_whitespace_nodes => :all)
+      doc = REXML::Document.new(raw_response, ignore_whitespace_nodes: :all)
 
       # check for responses we don't understand
-      raise UnparseableResponse.new(doc.root.name) unless doc.root.name == "Response"
+      raise UnparseableResponse, doc.root.name unless doc.root.name == 'Response'
 
-      response_element = REXML::XPath.first(doc, "/Response")
+      response_element = REXML::XPath.first(doc, '/Response')
 
-      response_element.children.reject { |e| e.is_a? REXML::Text }.each do |element|
-        case(element.name)
-          when "ID" then response.response_id = element.text
-          when "Status" then response.status = element.text
-          when "ProviderName" then response.provider = element.text
-          when "DateTimeUTC" then response.date_time = element.text
-          when "Contact" then response.response_item = Contact.from_xml(element, self)
-          when "Invoice" then response.response_item = Invoice.from_xml(element, self, {:line_items_downloaded => options[:request_signature] != "GET/Invoices"})
-          when "BankTransaction"
-            response.response_item = BankTransaction.from_xml(element, self, {:line_items_downloaded => options[:request_signature] != "GET/BankTransactions"})
-          when "ManualJournal"
-            response.response_item = ManualJournal.from_xml(element, self, {:journal_lines_downloaded => options[:request_signature] != "GET/ManualJournals"})
-          when "Contacts" then element.children.each {|child| response.response_item << Contact.from_xml(child, self) }
-          when "ContactGroups" then element.children.each {|child| response.response_item << ContactGroup.from_xml(child, self, {:contacts_downloaded => options[:request_signature] != "GET/contactgroups"}) }
-          when "Invoices" then element.children.each {|child| response.response_item << Invoice.from_xml(child, self, {:line_items_downloaded => options[:request_signature] != "GET/Invoices"}) }
-          when "BankTransactions"
+      if response_element
+        response_element.children.reject { |e| e.is_a? REXML::Text }.each do |element|
+          case element.name
+          when 'ID' then response.response_id = element.text
+          when 'Status' then response.status = element.text
+          when 'ProviderName' then response.provider = element.text
+          when 'DateTimeUTC' then response.date_time = element.text
+          when 'Contact' then response.response_item = Contact.from_xml(element, self)
+          when 'Invoice' then response.response_item = Invoice.from_xml(element, self,
+                                                                        { line_items_downloaded: options[:request_signature] != 'GET/Invoices' })
+          when 'BankTransaction'
+            response.response_item = BankTransaction.from_xml(element, self,
+                                                              { line_items_downloaded: options[:request_signature] != 'GET/BankTransactions' })
+          when 'ManualJournal'
+            response.response_item = ManualJournal.from_xml(element, self,
+                                                            { journal_lines_downloaded: options[:request_signature] != 'GET/ManualJournals' })
+          when 'Contacts' then element.children.each { |child| response.response_item << Contact.from_xml(child, self) }
+          when 'ContactGroups' then element.children.each do |child|
+                                      response.response_item << ContactGroup.from_xml(child, self,
+                                                                                      { contacts_downloaded: options[:request_signature] != 'GET/contactgroups' })
+                                    end
+          when 'Invoices' then element.children.each do |child|
+                                 response.response_item << Invoice.from_xml(child, self,
+                                                                            { line_items_downloaded: options[:request_signature] != 'GET/Invoices' })
+                               end
+          when 'BankTransactions'
             element.children.each do |child|
-              response.response_item << BankTransaction.from_xml(child, self, {:line_items_downloaded => options[:request_signature] != "GET/BankTransactions"})
+              response.response_item << BankTransaction.from_xml(child, self,
+                                                                 { line_items_downloaded: options[:request_signature] != 'GET/BankTransactions' })
             end
-          when "ManualJournals"
+          when 'ManualJournals'
             element.children.each do |child|
-              response.response_item << ManualJournal.from_xml(child, self, {:journal_lines_downloaded => options[:request_signature] != "GET/ManualJournals"})
+              response.response_item << ManualJournal.from_xml(child, self,
+                                                               { journal_lines_downloaded: options[:request_signature] != 'GET/ManualJournals' })
             end
-          when "CreditNotes" then element.children.each {|child| response.response_item << CreditNote.from_xml(child, self, {:line_items_downloaded => options[:request_signature] != "GET/CreditNotes"}) }
-          when "Accounts" then element.children.each {|child| response.response_item << Account.from_xml(child) }
-          when "TaxRates" then element.children.each {|child| response.response_item << TaxRate.from_xml(child) }
-          when "Items" then element.children.each {|child| response.response_item << Item.from_xml(child) }
-          when "Currencies" then element.children.each {|child| response.response_item << Currency.from_xml(child) }
-          when "Organisations" then response.response_item = Organisation.from_xml(element.children.first) # Xero only returns the Authorized Organisation
-          when "TrackingCategories" then element.children.each {|child| response.response_item << TrackingCategory.from_xml(child) }
-          when "Payment" then response.response_item = Payment.from_xml(element)
-          when "Payments"
+          when 'CreditNotes' then element.children.each do |child|
+                                    response.response_item << CreditNote.from_xml(child, self,
+                                                                                  { line_items_downloaded: options[:request_signature] != 'GET/CreditNotes' })
+                                  end
+          when 'Accounts' then element.children.each { |child| response.response_item << Account.from_xml(child) }
+          when 'TaxRates' then element.children.each { |child| response.response_item << TaxRate.from_xml(child) }
+          when 'Items' then element.children.each { |child| response.response_item << Item.from_xml(child) }
+          when 'Currencies' then element.children.each { |child| response.response_item << Currency.from_xml(child) }
+          when 'Organisations' then response.response_item = Organisation.from_xml(element.children.first) # Xero only returns the Authorized Organisation
+          when 'TrackingCategories' then element.children.each do |child|
+                                           response.response_item << TrackingCategory.from_xml(child)
+                                         end
+          when 'Payment' then response.response_item = Payment.from_xml(element)
+          when 'Payments'
             element.children.each do |child|
               response.response_item << Payment.from_xml(child)
             end
-          when "PayrollCalendars" then element.children.each {|child| response.response_item << PayrollCalendar.from_xml(child) }
-          when "PayRuns" then element.children.each {|child| response.response_item << PayRun.from_xml(child) }
-          when "Reports"
+          when 'PayrollCalendars' then element.children.each do |child|
+                                         response.response_item << PayrollCalendar.from_xml(child)
+                                       end
+          when 'PayRuns' then element.children.each { |child| response.response_item << PayRun.from_xml(child) }
+          when 'Reports'
             element.children.each do |child|
               response.response_item << Report.from_xml(child)
             end
-          when "Errors" then response.errors = element.children.map { |error| Error.parse(error) }
+          when 'Errors' then response.errors = element.children.map { |error| Error.parse(error) }
+          end
         end
-      end if response_element
+      end
 
       # If a single result is returned don't put it in an array
       if response.response_item.is_a?(Array) && response.response_item.size == 1
@@ -824,6 +864,6 @@ module XeroGateway
       response.response_xml   = raw_response
       response
     end
-
   end
 end
+
