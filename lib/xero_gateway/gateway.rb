@@ -23,7 +23,6 @@ module XeroGateway
       else
         @client = OAuth.new(consumer_key, consumer_secret, options)
       end
-      # debugger
     end
 
     #
